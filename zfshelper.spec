@@ -15,6 +15,7 @@ Group: Storage/Tools
 BuildRoot: %{_tmppath}/%{name}-root
 URL: https://stash.ingramcontent.com/projects/RPM/repos/zfshelper/browse
 Version: 1.0
+BuildArch: noarch
 
 # These BuildRequires can be found in Base
 #BuildRequires: zlib, zlib-devel 
@@ -27,20 +28,25 @@ BuildRequires: kernel-devel, kernel-headers
 %endif
 
 # These BuildRequires can be found in EPEL
-#BuildRequires: libnet, libnet-devel 
 
 # These BuildRequires can be found in ZFS on Linux
 
 # These Requires can be found in Base
-#Requires: libnfnetlink >= 1
+Requires: bc
+Requires: coreutils
+Requires: gawk
+Requires: grep
+Requires: lvm2
+Requires: parted
+Requires: sed
+Requires: util-linux-ng
 
 # These Requires can be found in EPEL
-#Requires: libnet       >= 1
 
 # These Requires can be found in ZFS on Linux
-#Requires: libnet       >= 1
+Requires: zfs
 
-%define install_base /usr/local/
+%define install_base /usr/local
 %define install_dir %{install_base}/bin
 
 Source0: ~/rpmbuild/SOURCES/zfshelper.sh
@@ -55,8 +61,8 @@ to create ZFS volumes that fit their specific needs
 %install
 rm -rf %{buildroot}
 # Populate %{buildroot}
-mkdir %{buildroot}%{install_dir}
-cp %{SOURCE0} %{buildroot}%{install_dir}
+mkdir -p %{buildroot}%{install_dir}
+cp %{SOURCE0} %{buildroot}%{install_dir}/zfshelper
 # Build packaging manifest
 rm -rf /tmp/MANIFEST.%{name}* > /dev/null 2>&1
 echo '%defattr(-,root,root)' > /tmp/MANIFEST.%{name}
@@ -77,6 +83,11 @@ for i in `awk '{print $0}' /tmp/MANIFEST.%{name}.tmp` ; do
     dir=`dirname "${filename}"`
     echo "${dir}/*"
 done | sort -u >> /tmp/MANIFEST.%{name}
+
+%post
+if [ ! -d /var/log/zfs ]; then
+    mkdir -p /var/log/zfs
+fi
 
 %files -f /tmp/MANIFEST.%{name}
 

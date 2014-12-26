@@ -29,6 +29,8 @@
 #                                        support for using disk partitions. 
 #                                        Checks that invoking user is id=0.
 #                                        Improved error checking.
+# 20141226     Jason W. Plummer          Fixed errors regarding rawdisk and
+#                                        and partition exclusion detection
 
 ################################################################################
 # DESCRIPTION
@@ -40,8 +42,8 @@
 # This script does the following:
 #
 # 1. (Without arguments): Guides the invoking user through ZFS volume creation/
-#    modification.  A menu of choices are presented, and simple integer entry
-#    steps through VDEV manipulation.
+#    modification.  A menu of choices is presented, and simple integer entry
+#    steps the invoking user through VDEV manipulation.
 # 2. (With arguments): Behaves as a wrapper around 'zpool'
 # 3. Logs all operations to ${LOG_DIR}/${LOG_FILE}
 
@@ -112,7 +114,7 @@ f__check_command() {
     my_command="${1}"
 
     if [ "${my_command}" != "" ]; then
-        my_command_check=`which ${1} 2> /dev/null`
+        my_command_check=`unalias "${1}" > /dev/null 2>&1 ; which "${1}" 2> /dev/null`
 
         if [ "${my_command_check}" = "" ]; then
             return_code=${ERROR}
@@ -677,7 +679,20 @@ f__cli_args() {
 # WHY:  This subroutine finds all local filesystem disks/partitions
 #
 f__all_disks() {
-    items=`${my_parted} -l 2> /dev/null | ${my_awk} '/^Disk \/dev/ {print $2}' | ${my_sed} -e 's/://g' | ${my_sort} -u`
+    #items=`${my_parted} -l 2> /dev/null | ${my_awk} '/^Disk \/dev/ {print $2}' | ${my_sed} -e 's/://g' | ${my_sort} -u`
+
+    case ${device_type} in 
+
+        partitions)
+            items=`${my_ls} -altr /dev/disk/by-id/ | ${my_awk} -F'/' '/sd/ {print "/dev/" $NF}' | ${my_egrep} "[1-9]$" | ${my_sort} -u`
+        ;;
+
+        *)
+            items=`${my_ls} -altr /dev/disk/by-id/ | ${my_awk} -F'/' '/sd/ {print "/dev/" $NF}' | ${my_sed} -e 's/[0-9]//g' | ${my_sort} -u`
+        ;;
+
+    esac 
+
     echo "${items}"
 }
 
@@ -790,7 +805,8 @@ f__available_disks() {
 #       excluded from any ZFS pools
 #
 f__excluded_disks() {
-    fs_items=`${my_df} -h 2> /dev/null | ${my_egrep} "^/dev" | ${my_awk} '{print $1}'`
+    #fs_items=`${my_df} -h 2> /dev/null | ${my_egrep} "^/dev" | ${my_awk} '{print $1}'`
+    fs_items=`${my_df} -h 2> /dev/null | ${my_egrep} -v "mapper" | ${my_awk} '/^\/dev/ {print $1}'`
     excluded_items=""
 
     # Add currently mounted filesystem disks to the exludes list
@@ -800,6 +816,17 @@ f__excluded_disks() {
             excluded_items="${fs_item}"
         else
             excluded_items="${excluded_items} ${fs_item}"
+        fi
+
+    done
+
+    # Add any swap devices
+    for swap in `${my_awk} '/^\/dev/ {print $1}' /proc/swaps 2> /dev/null` ; do
+
+        if [ "${excluded_items}" = "" ]; then
+            excluded_items="${swap}"
+        else
+            excluded_items="${excluded_items} ${swap}"
         fi
 
     done
@@ -815,7 +842,7 @@ f__excluded_disks() {
             end_line=`${my_zpool} status 2> /dev/null | ${my_egrep} -nB2 "^errors:" | ${my_head} -1 | ${my_awk} -F'-' '{print $1}'`
         fi
 
-        # Add one to delta computation because search pattern in inclusive
+        # Add one to delta computation because search pattern is inclusive
         let delta=`echo "${end_line}-${start_line}+1" | ${my_bc}`
         zfs_items=`${my_zpool} status "${zpool}" 2> /dev/null | ${my_egrep} -nA${delta} "NAME.*STATE" | ${my_tail} -${delta} | ${my_awk} '{print $2}'`
 
@@ -843,7 +870,13 @@ f__excluded_disks() {
             fi
 
             if [ "${this_item}" != "" ]; then
-                excluded_items="${excluded_items} /dev/${this_item}"
+
+                if [ "${excluded_items}" = "" ]; then
+                    excluded_items="${this_item}"
+                else
+                    excluded_items="${excluded_items} /dev/${this_item}"
+                fi
+
             fi
 
         done
@@ -877,7 +910,18 @@ f__excluded_disks() {
     done
 
     # Uniquely sort the updated exclude list
-    sorted_items=`for exclude in ${excluded_items} ; do echo -ne "${exclude}\n" ; done | ${my_sort} -u`
+    case ${device_type} in 
+
+        partitions)
+            sorted_items=`for exclude in ${excluded_items} ; do echo -ne "${exclude}\n" ; done | ${my_sort} -u`
+        ;;
+
+        *)
+            sorted_items=`for exclude in ${excluded_items} ; do echo -ne "${exclude}\n" ; done | ${my_sed} -e 's/[0-9]*$//g' | ${my_sort} -u`
+        ;;
+
+    esac 
+
     excluded_items=""
 
     for i in ${sorted_items} ; do
@@ -933,6 +977,13 @@ fi
 # WHY:  Needed later
 #
 if [ ${exit_code} -eq ${SUCCESS} ]; then
+    device_type="rawdisks"
+
+    if [ "${1}" = "partitions" ]; then
+        device_type="${1}"
+        shift
+    fi
+
     excluded_disks=`f__excluded_disks`
 
     if [ "${excluded_disks}" = "" ]; then
@@ -950,12 +1001,6 @@ fi
 # WHY:  Determines how we behave
 #
 if [ ${exit_code} -eq ${SUCCESS} ]; then
-    device_type="rawdisks"
-
-    if [ "${1}" = "partitions" ]; then
-        device_type="${1}"
-        shift
-    fi
 
     if [ "${*}" = "" ]; then
         f__guided
