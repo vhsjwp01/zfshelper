@@ -47,7 +47,7 @@ Requires: util-linux-ng
 Requires: zfs
 
 %define install_base /usr/local
-%define install_dir %{install_base}/bin
+%define install_dir %{install_base}/sbin
 
 Source0: ~/rpmbuild/SOURCES/zfshelper.sh
 #Source1: /usr/src/redhat/SOURCES/suricata_init_script
