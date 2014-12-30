@@ -31,6 +31,13 @@
 #                                        Improved error checking.
 # 20141226     Jason W. Plummer          Fixed errors regarding rawdisk and
 #                                        and partition exclusion detection
+# 20141229     Jason W. Plummer          Fixed errors regarding LVM physical
+#                                        disk detection
+# 20141230     Jason W. Plummer          Changed disk exclusion subroutine to
+#                                        always gather partitions that are in 
+#                                        use by the filesystem, swap, LVM, or
+#                                        mdadm and only convert them to raw
+#                                        disk names when called that way
 
 ################################################################################
 # DESCRIPTION
@@ -743,15 +750,16 @@ f__available_disks() {
                 ;;
 
                 partitions)
-                    part_start_line=`${my_parted} -s ${this_item} print 2> /dev/null | ${my_egrep} -nA1 "^Number" | ${my_tail} -1 | ${my_awk} -F'-' '{print $1}'`
-                    part_end_line=`${my_parted} -s ${this_item} unit B print 2> /dev/null | ${my_wc} -l`
+                    this_raw_item=`echo "${this_item}" | ${my_sed} -e 's/[0-9]*$//g'`
+                    part_start_line=`${my_parted} -s ${this_raw_item} print 2> /dev/null | ${my_egrep} -nA1 "^Number" | ${my_tail} -1 | ${my_awk} -F'-' '{print $1}'`
+                    part_end_line=`${my_parted} -s ${this_raw_item} unit B print 2> /dev/null | ${my_wc} -l`
 
                     # parted output prints a blank line as the last line of output
                     let part_end_line=${part_end_line}-1
 
-                    # Add one to delta computation because search pattern in inclusive
+                    # Add one to delta computation because search pattern is inclusive
                     let part_line_delta=`echo "${part_end_line}-${part_start_line}+1" | ${my_bc}`
-                    part_lines=`${my_parted} -s ${this_item} unit B print 2> /dev/null | ${my_egrep} -A${part_line_delta} "^Number" | ${my_tail} -${part_line_delta} | ${my_awk} '{print $1 ":" $4}'`
+                    part_lines=`${my_parted} -s ${this_raw_item} unit B print 2> /dev/null | ${my_egrep} -A${part_line_delta} "^Number" | ${my_tail} -${part_line_delta} | ${my_awk} '{print $1 ":" $4}'`
 
                     for part_line in ${part_lines} ; do
                         this_part_number=`echo "${part_line}" | ${my_awk} -F':' '{print $1}'`
@@ -771,9 +779,9 @@ f__available_disks() {
                         size_hr="${hr_int_size}.${hr_dec_size}GB"
 
                         if [ "${real_item}" = "" ]; then
-                            real_item="${size_hr}:${this_item}${this_part_number}"
+                            real_item="${size_hr}:${this_raw_item}${this_part_number}"
                         else
-                            real_item="${real_item} ${size_hr}:${this_item}${this_part_number}"
+                            real_item="${real_item} ${size_hr}:${this_raw_item}${this_part_number}"
                         fi
 
                     done
@@ -805,11 +813,10 @@ f__available_disks() {
 #       excluded from any ZFS pools
 #
 f__excluded_disks() {
-    #fs_items=`${my_df} -h 2> /dev/null | ${my_egrep} "^/dev" | ${my_awk} '{print $1}'`
-    fs_items=`${my_df} -h 2> /dev/null | ${my_egrep} -v "mapper" | ${my_awk} '/^\/dev/ {print $1}'`
+    fs_items=`${my_df} -h 2> /dev/null | ${my_awk} '/^\/dev\/sd/ {print $1}'`
     excluded_items=""
 
-    # Add currently mounted filesystem disks to the exludes list
+    # Add currently mounted physical filesystem paritions to the exludes list
     for fs_item in ${fs_items} ; do
 
         if [ "${excluded_items}" = "" ]; then
@@ -820,13 +827,15 @@ f__excluded_disks() {
 
     done
 
-    # Add any swap devices
-    for swap in `${my_awk} '/^\/dev/ {print $1}' /proc/swaps 2> /dev/null` ; do
+    # Add any physical swap partition items
+    swap_items=`${my_awk} '/^\/dev\/sd/ {print $1}' /proc/swaps 2> /dev/null`
+
+    for swap_item in ${swap_items} ; do
 
         if [ "${excluded_items}" = "" ]; then
-            excluded_items="${swap}"
+            excluded_items="${swap_item}"
         else
-            excluded_items="${excluded_items} ${swap}"
+            excluded_items="${excluded_items} ${swap_item}"
         fi
 
     done
@@ -870,12 +879,26 @@ f__excluded_disks() {
             fi
 
             if [ "${this_item}" != "" ]; then
+                part_start_line=`${my_parted} -s /dev/${this_item} print 2> /dev/null | ${my_egrep} -nA1 "^Number" | ${my_tail} -1 | ${my_awk} -F'-' '{print $1}'`
+                part_end_line=`${my_parted} -s /dev/${this_item} unit B print 2> /dev/null | ${my_wc} -l`
 
-                if [ "${excluded_items}" = "" ]; then
-                    excluded_items="${this_item}"
-                else
-                    excluded_items="${excluded_items} /dev/${this_item}"
-                fi
+                # parted output prints a blank line as the last line of output
+                let part_end_line=${part_end_line}-1
+
+                # Add one to delta computation because search pattern is inclusive
+                let part_line_delta=`echo "${part_end_line}-${part_start_line}+1" | ${my_bc}`
+                part_lines=`${my_parted} -s /dev/${this_item} unit B print 2> /dev/null | ${my_egrep} -A${part_line_delta} "^Number" | ${my_tail} -${part_line_delta} | ${my_awk} '{print $1}'`
+
+                for part_line in ${part_lines} ; do
+                    this_part_item="/dev/${this_item}${part_line}"
+
+                    if [ "${excluded_items}" = "" ]; then
+                        excluded_items="${this_part_item}"
+                    else
+                        excluded_items="${excluded_items} ${this_part_item}"
+                    fi
+
+                done
 
             fi
 
@@ -883,29 +906,30 @@ f__excluded_disks() {
 
     done
 
-    # Expand any LVM or MDADM devices into their components
-    for item in ${excluded_items} ; do
+    # Expand any LVM devices into their components
+    lvm_items=`${my_lvmdiskscan} 2> /dev/null | ${my_egrep} "/dev/.*LVM physical volume$" | ${my_awk} '{print $1}'`
 
-        case ${item} in
+    for lvm_item in ${lvm_items} ; do
 
-            /dev/mapper*)
+        if [ "${excluded_items}" = "" ]; then
+            excluded_items="${lvm_item}"
+        else
+            excluded_items="${excluded_items} ${lvm_item}"
+        fi
 
-                for element in `${my_pvscan} 2> /dev/null | ${my_awk} '/ PV \// {print $2}'` ; do
-                    excluded_items="${excluded_items} ${element}"
-                done
+    done
 
-            ;;
+    # Expand any MDADM devices into their components
+    mdadm_items=`${my_awk} -F'raid[0-9]*' '/active/ {print $NF}' /proc/mdstat`
 
-            /dev/md*)
+    for mdadm_item in ${mdadm_items} ; do
+        mdadm_item=`echo "${mdadm_item}" | ${my_awk} -F'[0-9]*\\\[' '{print $1}'`
 
-                for element in `${my_awk} -F'raid[0-9]*' '/active/ {print $NF}' /proc/mdstat` ; do 
-                    element=`echo "${element}" | ${my_awk} -F'[0-9]*\\\[' '{print $1}'`
-                    excluded_items="${excluded_items} /dev/${element}"
-                done
-
-            ;;
-
-        esac
+        if [ "${excluded_items}" = "" ]; then
+            excluded_items="${mdadm_item}"
+        else
+            excluded_items="${excluded_items} ${mdadm_item}"
+        fi
 
     done
 
@@ -948,7 +972,7 @@ f__excluded_disks() {
 #
 if [ ${exit_code} -eq ${SUCCESS} ]; then
 
-    for command in awk bc cut date df egrep fdisk head id ls parted pvscan sed sort tail tr zpool wc ; do
+    for command in awk bc cut date df egrep fdisk head id ls lvmdiskscan parted pvscan sed sort tail tr zpool wc ; do
         unalias ${command} > /dev/null 2>&1
         f__check_command "${command}"
 
