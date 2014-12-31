@@ -686,7 +686,6 @@ f__cli_args() {
 # WHY:  This subroutine finds all local filesystem disks/partitions
 #
 f__all_disks() {
-    #items=`${my_parted} -l 2> /dev/null | ${my_awk} '/^Disk \/dev/ {print $2}' | ${my_sed} -e 's/://g' | ${my_sort} -u`
 
     case ${device_type} in 
 
@@ -695,7 +694,9 @@ f__all_disks() {
         ;;
 
         *)
-            items=`${my_ls} -altr /dev/disk/by-id/ | ${my_awk} -F'/' '/sd/ {print "/dev/" $NF}' | ${my_sed} -e 's/[0-9]//g' | ${my_sort} -u`
+            #items=`${my_ls} -altr /dev/disk/by-id/ | ${my_awk} -F'/' '/sd/ {print "/dev/" $NF}' | ${my_sed} -e 's/[0-9]//g' | ${my_sort} -u`
+            #items=`${my_parted} -l 2> /dev/null | ${my_awk} '/^Disk \/dev/ {print $2}' | ${my_sed} -e 's/://g' | ${my_sort} -u`
+            items=`${my_fdisk} -l 2> /dev/null | ${my_awk} -F':' '/^Disk \/dev\/sd/ {print $1}' | ${my_awk} '{print $NF}'`
         ;;
 
     esac 
